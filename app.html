@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>State Aggregator for Municipal Officials</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        header {
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+        }
+        
+        h1 {
+            color: #2d3748;
+            font-size: 32px;
+            margin-bottom: 10px;
+        }
+        
+        .subtitle {
+            color: #718096;
+            font-size: 16px;
+        }
+        
+        .input-section {
+            background: white;
+            padding: 25px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+        }
+        
+        .input-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        
+        input {
+            flex: 1;
+            padding: 12px 16px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 16px;
+        }
+        
+        input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        button {
+            padding: 12px 32px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        
+        button:hover {
+            background: #5568d3;
+        }
+        
+        button:disabled {
+            background: #cbd5e0;
+            cursor: not-allowed;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #718096;
+        }
+        
+        .briefs-container {
+            display: grid;
+            gap: 20px;
+        }
+        
+        .brief-card {
+            background: white;
+            border-radius: 12px;
+            padding: 25px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        
+        .brief-header {
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #e2e8f0;
+        }
+        
+        .bill-number {
+            font-size: 14px;
+            font-weight: 600;
+            color: #667eea;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .bill-title {
+            font-size: 20px;
+            font-weight: 700;
+            color: #2d3748;
+            margin: 8px 0;
+        }
+        
+        .bill-date {
+            font-size: 14px;
+            color: #718096;
+        }
+        
+        .urgency-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            margin-left: 10px;
+        }
+        
+        .urgency-low {
+            background: #c6f6d5;
+            color: #22543d;
+        }
+        
+        .urgency-medium {
+            background: #feebc8;
+            color: #7c2d12;
+        }
+        
+        .urgency-high {
+            background: #fed7d7;
+            color: #742a2a;
+        }
+        
+        .action-badge {
+            display: inline-block;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            margin-bottom: 15px;
+            text-transform: uppercase;
+        }
+        
+        .action-monitor {
+            background: #bee3f8;
+            color: #2c5282;
+        }
+        
+        .action-prepare {
+            background: #fbd38d;
+            color: #744210;
+        }
+        
+        .action-act {
+            background: #fc8181;
+            color: #742a2a;
+        }
+        
+        .section {
+            margin-bottom: 20px;
+        }
+        
+        .section-title {
+            font-size: 14px;
+            font-weight: 700;
+            color: #4a5568;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }
+        
+        .section-content {
+            color: #2d3748;
+            line-height: 1.6;
+        }
+        
+        .roles {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        
+        .role-tag {
+            background: #edf2f7;
+            color: #2d3748;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 13px;
+        }
+        
+        .steps {
+            list-style: none;
+        }
+        
+        .steps li {
+            padding: 8px 0;
+            padding-left: 24px;
+            position: relative;
+        }
+        
+        .steps li:before {
+            content: "→";
+            position: absolute;
+            left: 0;
+            color: #667eea;
+            font-weight: bold;
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #718096;
+        }
+        
+        .empty-state svg {
+            width: 64px;
+            height: 64px;
+            margin-bottom: 16px;
+            opacity: 0.5;
+        }
+
+        .bill-history-table {
+            margin-top: 10px;
+            overflow-x: auto;
+        }
+
+        .bill-history-table table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .bill-history-table thead tr {
+            background: #f7fafc;
+            border-bottom: 2px solid #e2e8f0;
+        }
+
+        .bill-history-table th {
+            padding: 10px;
+            text-align: left;
+            font-size: 13px;
+            font-weight: 600;
+            color: #4a5568;
+        }
+
+        .bill-history-table td {
+            padding: 10px;
+            font-size: 13px;
+            color: #2d3748;
+            border-bottom: 1px solid #e2e8f0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🏛️ State Aggregator for Municipal Officials</h1>
+            <p class="subtitle">Operational intelligence for Massachusetts local government</p>
+        </header>
+
+        <div class="input-section">
+            <h2 style="margin-bottom: 15px; color: #2d3748;">Analyze Bills</h2>
+            <div class="input-group">
+                <input 
+                    type="text" 
+                    id="billInput" 
+                    placeholder="Enter bill numbers separated by commas (e.g., H491, S2024, H4916)"
+                    onkeypress="if(event.key === 'Enter') analyzeBills()"
+                />
+                <button onclick="analyzeBills()" id="analyzeBtn">Analyze Bills</button>
+            </div>
+            <p style="color: #718096; font-size: 14px;">Examples: H491, S2024, H4916</p>
+        </div>
+
+        <div id="results"></div>
+    </div>
+
+    <script>
+        const API_URL = window.location.origin;
+
+        async function analyzeBills() {
+            const input = document.getElementById('billInput').value.trim();
+            if (!input) return;
+
+            const billNumbers = input.split(',').map(b => b.trim()).filter(b => b);
+            const resultsDiv = document.getElementById('results');
+            const analyzeBtn = document.getElementById('analyzeBtn');
+
+            analyzeBtn.disabled = true;
+            analyzeBtn.textContent = 'Analyzing...';
+            resultsDiv.innerHTML = '<div class="loading">🔍 Fetching and analyzing bills from MA Legislature...</div>';
+
+            try {
+                const response = await fetch(`${API_URL}/api/collect`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ billNumbers })
+                });
+
+                const data = await response.json();
+
+                if (data.briefs && data.briefs.length > 0) {
+                    displayBriefs(data.briefs);
+                } else {
+                    resultsDiv.innerHTML = `
+                        <div class="empty-state">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                            </svg>
+                            <h3>No briefs generated</h3>
+                            <p>Unable to analyze the requested bills.</p>
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                resultsDiv.innerHTML = `
+                    <div class="empty-state" style="color: #e53e3e;">
+                        <h3>Error</h3>
+                        <p>${error.message}</p>
+                    </div>
+                `;
+            } finally {
+                analyzeBtn.disabled = false;
+                analyzeBtn.textContent = 'Analyze Bills';
+            }
+        }
+
+        function displayBriefs(briefs) {
+            const resultsDiv = document.getElementById('results');
+            
+            console.log('Displaying briefs:', briefs);
+            
+            const html = `
+                <div class="briefs-container">
+                    ${briefs.map(brief => {
+                        console.log('Brief history:', brief.item.history);
+                        return `
+                        <div class="brief-card">
+                            <div class="brief-header">
+                                <div class="bill-number">${brief.item.bill.bill_number}</div>
+                                <h2 class="bill-title">${brief.item.title}</h2>
+                                <div class="bill-description" style="color: #4a5568; font-size: 15px; margin: 12px 0; line-height: 1.5;">
+                                    ${brief.item.bill.current_status}
+                                </div>
+                                <div class="bill-date">
+                                    ${brief.item.published_at}
+                                    <span class="urgency-badge urgency-${brief.analysis.urgency}">
+                                        ${brief.analysis.urgency} urgency
+                                    </span>
+                                </div>
+                            </div>
+
+                            <div class="action-badge action-${brief.analysis.what_to_do}">
+                                ${brief.analysis.what_to_do}
+                            </div>
+
+                            <div class="section">
+                                <div class="section-title">Summary</div>
+                                <div class="section-content">${brief.analysis.summary}</div>
+                            </div>
+
+                            <div class="section">
+                                <div class="section-title">Bill History</div>
+                                <div class="bill-history-table">
+                                    <table>
+                                        <thead>
+                                            <tr>
+                                                <th>Date</th>
+                                                <th>Branch</th>
+                                                <th>Action</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            ${brief.item.history && brief.item.history.length > 0 
+                                                ? brief.item.history.map(h => `
+                                                    <tr>
+                                                        <td>${h.date}</td>
+                                                        <td>${h.branch}</td>
+                                                        <td>${h.action}</td>
+                                                    </tr>
+                                                `).join('')
+                                                : '<tr><td colspan="3" style="padding: 10px; text-align: center; color: #e53e3e;">No history data received from server</td></tr>'
+                                            }
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+
+                            <div class="section">
+                                <div class="section-title">Why It Matters</div>
+                                <div class="section-content">${brief.analysis.why_it_matters}</div>
+                            </div>
+
+                            <div class="section">
+                                <div class="section-title">Who Should Care</div>
+                                <div class="roles">
+                                    ${brief.analysis.who_should_care.map(role => 
+                                        `<span class="role-tag">${role}</span>`
+                                    ).join('')}
+                                </div>
+                            </div>
+
+                            <div class="section">
+                                <div class="section-title">Recommended Next Steps</div>
+                                <ul class="steps">
+                                    ${brief.analysis.recommended_next_steps.map(step => 
+                                        `<li>${step}</li>`
+                                    ).join('')}
+                                </ul>
+                            </div>
+
+                            ${brief.analysis.model_notes ? `
+                                <div class="section">
+                                    <div class="section-title">Analysis Notes</div>
+                                    <div class="section-content" style="font-style: italic; color: #718096;">
+                                        ${brief.analysis.model_notes}
+                                    </div>
+                                </div>
+                            ` : ''}
+                        </div>
+                    `}).join('')}
+                </div>
+            `;
+
+            resultsDiv.innerHTML = html;
+        }
+    </script>
+</body>
+</html>
