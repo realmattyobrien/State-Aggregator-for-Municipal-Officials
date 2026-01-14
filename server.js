@@ -6,6 +6,12 @@ import cors from 'cors';
 import crypto from 'crypto';
 import Anthropic from '@anthropic-ai/sdk';
 import { JSDOM } from 'jsdom';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+import { readFileSync } from 'fs';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 const app = express();
 app.use(cors());
@@ -452,19 +458,24 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Root endpoint
+// Serve HTML file at root
 app.get('/', (req, res) => {
-  res.json({
-    name: 'State Aggregator for Municipal Officials',
-    version: '1.0.0',
-    status: 'running',
-    endpoints: {
-      health: '/health',
-      collect: 'POST /api/collect',
-      briefs: '/api/briefs',
-      brief: '/api/briefs/:id',
-    },
-  });
+  try {
+    const html = readFileSync(join(__dirname, 'index.html'), 'utf8');
+    res.send(html);
+  } catch (error) {
+    res.json({
+      name: 'State Aggregator for Municipal Officials',
+      version: '1.0.0',
+      status: 'running',
+      endpoints: {
+        health: '/health',
+        collect: 'POST /api/collect',
+        briefs: '/api/briefs',
+        brief: '/api/briefs/:id',
+      },
+    });
+  }
 });
 
 const PORT = process.env.PORT || 3001;
