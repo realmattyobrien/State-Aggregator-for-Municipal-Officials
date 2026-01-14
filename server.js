@@ -75,7 +75,7 @@ function calculateHash(text) {
 
 // Fetch MA Legislature bill page
 async function fetchBillPage(billNumber) {
-  const session = '193'; // 2023-2024 session, update as needed
+  const session = '194'; // 2025-2026 session, update as needed
   const url = `https://malegislature.gov/Bills/${session}/${billNumber}`;
   
   log('info', `Fetching bill page: ${billNumber}`, { url });
