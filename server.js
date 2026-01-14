@@ -431,7 +431,7 @@ app.get('/health', (req, res) => {
 // Serve HTML file at root
 app.get('/', (req, res) => {
   try {
-    const html = readFileSync(join(__dirname, 'index.html'), 'utf8');
+    const html = readFileSync(join(__dirname, 'app.html'), 'utf8');
     res.send(html);
   } catch (error) {
     res.json({
