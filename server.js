@@ -1,4 +1,4 @@
-// server.js - State Aggregator for Municipal Officials
+// server.js - State Policy Aggregator for Municipal Officials
 // Backend server for collecting and analyzing MA government data
 
 import express from 'express';
