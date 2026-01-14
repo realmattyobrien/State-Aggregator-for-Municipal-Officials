@@ -92,67 +92,28 @@ function parseBillPage(html, url) {
   const dom = new JSDOM(html);
   const document = dom.window.document;
   
-  // Extract bill title - try multiple selectors
-  let title = 'Unknown Title';
-  const titleSelectors = [
-    '.fc_billhead h1',
-    'h1.bill-title',
-    '.bill-header h1',
-    'h1'
-  ];
+  // Extract bill title
+  const titleElement = document.querySelector('.fc_billhead h1');
+  const title = titleElement ? titleElement.textContent.trim() : 'Unknown Title';
   
-  for (const selector of titleSelectors) {
-    const elem = document.querySelector(selector);
-    if (elem && elem.textContent.trim()) {
-      title = elem.textContent.trim();
-      break;
-    }
-  }
-  
-  // Extract bill number from URL if not in title
-  const urlMatch = url.match(/\/Bills\/\d+\/(H\.|S\.)\d+/);
-  const billNumber = urlMatch ? urlMatch[1].replace('.', '') + urlMatch[1].match(/\d+/)[0] : null;
+  // Extract bill number
+  const billNumberMatch = title.match(/^(H\.|S\.)\d+/);
+  const billNumber = billNumberMatch ? billNumberMatch[0] : null;
   
   if (!billNumber) {
-    log('error', 'Could not extract bill number', { url, title });
     throw new Error('Could not extract bill number from page');
   }
   
-  log('info', `Extracted bill number: ${billNumber} from URL`);
-  
   // Extract current status
-  let currentStatus = 'Status unknown';
-  const statusSelectors = [
-    '.fc_billstatus',
-    '.bill-status',
-    '.status'
-  ];
-  
-  for (const selector of statusSelectors) {
-    const elem = document.querySelector(selector);
-    if (elem && elem.textContent.trim()) {
-      currentStatus = elem.textContent.trim();
-      break;
-    }
-  }
+  const statusElement = document.querySelector('.fc_billstatus');
+  const currentStatus = statusElement ? statusElement.textContent.trim() : 'Status unknown';
   
   // Extract bill history table
   const historyRows = [];
-  const historySelectors = [
-    'table.fc_billhistory',
-    'table.bill-history',
-    'table#billHistory',
-    'table'
-  ];
-  
-  let historyTable = null;
-  for (const selector of historySelectors) {
-    historyTable = document.querySelector(selector);
-    if (historyTable) break;
-  }
+  const historyTable = document.querySelector('table.fc_billhistory');
   
   if (historyTable) {
-    const rows = historyTable.querySelectorAll('tbody tr, tr');
+    const rows = historyTable.querySelectorAll('tbody tr');
     rows.forEach(row => {
       const cells = row.querySelectorAll('td');
       if (cells.length >= 3) {
@@ -160,7 +121,7 @@ function parseBillPage(html, url) {
         const branch = cells[1].textContent.trim();
         const action = cells[2].textContent.trim();
         
-        if (date && action && date.match(/\d/)) {
+        if (date && action) {
           historyRows.push({ date, branch, action });
         }
       }
@@ -180,6 +141,18 @@ function parseBillPage(html, url) {
     url,
   };
 }
+
+// Process bill history and identify new items
+function processBillHistory(billData) {
+  const newItems = [];
+  
+  for (const historyRow of billData.historyRows) {
+    const itemId = generateItemId(billData.billNumber, historyRow.date, historyRow.action);
+    const contentHash = calculateHash(historyRow.action);
+    
+    // Check if we've seen this exact item before
+    const seenItem = storage.seenItems.get(itemId);
+    
     if (seenItem && seenItem.sha256 === contentHash) {
       // Already processed this exact action
       continue;
