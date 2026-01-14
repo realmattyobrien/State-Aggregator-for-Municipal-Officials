@@ -1,4 +1,4 @@
-// server.js - State Policy Aggregator for Municipal Officials
+// server.js - State Aggregator for Municipal Officials
 // Backend server for collecting and analyzing MA government data
 
 import express from 'express';
@@ -75,7 +75,7 @@ function calculateHash(text) {
 
 // Fetch MA Legislature bill page
 async function fetchBillPage(billNumber) {
-  const session = '194'; // 2025-2026 session, update as needed
+  const session = '194'; // 2025-2026 session (current)
   const url = `https://malegislature.gov/Bills/${session}/${billNumber}`;
   
   log('info', `Fetching bill page: ${billNumber}`, { url });
@@ -90,6 +90,40 @@ async function fetchBillPage(billNumber) {
   } catch (error) {
     log('error', `Failed to fetch bill page: ${billNumber}`, { error: error.message });
     throw error;
+  }
+}
+
+// Fetch bill text
+async function fetchBillText(billNumber, session) {
+  const textUrl = `https://malegislature.gov/Bills/${session}/${billNumber}/BillText`;
+  
+  log('info', `Fetching bill text: ${billNumber}`, { textUrl });
+  
+  try {
+    const response = await fetch(textUrl);
+    if (!response.ok) {
+      log('warn', `Could not fetch bill text for ${billNumber}`);
+      return null;
+    }
+    const html = await response.text();
+    
+    const dom = new JSDOM(html);
+    const document = dom.window.document;
+    
+    // Extract text from bill content
+    const billContent = document.querySelector('.modal-body');
+    if (billContent) {
+      // Get text, clean up whitespace
+      let text = billContent.textContent;
+      text = text.replace(/\s+/g, ' ').trim();
+      // Limit to first 4000 characters to avoid token limits
+      return text.substring(0, 4000);
+    }
+    
+    return null;
+  } catch (error) {
+    log('error', `Failed to fetch bill text: ${billNumber}`, { error: error.message });
+    return null;
   }
 }
 
@@ -202,10 +236,10 @@ function processBillHistory(billData) {
       published_at: historyRow.date,
       bill: {
         bill_number: billData.billNumber,
-        session: '2023-2024',
+        session: '2025-2026',
         current_status: billData.currentStatus,
       },
-      raw_text: `Bill: ${billData.title}\nBill Number: ${billData.billNumber}\nDate: ${historyRow.date}\nBranch: ${historyRow.branch}\nAction: ${historyRow.action}\nCurrent Status: ${billData.currentStatus}`,
+      raw_text: billData.billText || `Bill: ${billData.title}\nBill Number: ${billData.billNumber}\nDate: ${historyRow.date}\nBranch: ${historyRow.branch}\nAction: ${historyRow.action}\nCurrent Status: ${billData.currentStatus}`,
       raw_text_sha256: contentHash,
       action_text: historyRow.action,
       action_date: historyRow.date,
@@ -242,44 +276,49 @@ Recent Action (${item.action_date}): ${item.action_text}
 Current Status: ${item.bill.current_status}
 Source: ${item.url}
 
+FULL BILL TEXT:
+${item.raw_text}
+
 CONTEXT:
 This is a legislative action record. The action "${item.action_text}" has occurred on ${item.action_date}.
 
 ANALYSIS INSTRUCTIONS:
-Analyze this bill action as a municipal operations analyst would. Focus on:
-1. What this action means for the legislative process
-2. Potential operational implications if this bill advances/becomes law
-3. Which municipal roles should be aware of this bill's progress
-4. Whether any preparatory action is warranted at this stage
+Analyze this bill as a municipal operations analyst would. Read the full bill text carefully and focus on:
+1. What this bill specifically does (cite actual provisions)
+2. What this recent legislative action means for the bill's progress
+3. Concrete operational implications for municipal government
+4. Which municipal roles need to know about this
+5. What preparatory actions are warranted at this stage
 
 CRITICAL REQUIREMENTS:
 - Use neutral, professional language suitable for municipal administrators
-- Base analysis on the action and bill title - acknowledge uncertainty about full bill text
+- Cite specific provisions and sections from the bill text when explaining what it does
+- Be concrete about operational impacts based on actual bill language
 - Avoid political framing or policy commentary
 - If this is an early-stage action (e.g., committee referral), indicate monitoring is appropriate
-- If this is a late-stage action (e.g., enacted), indicate immediate review is needed
-- Be explicit about what is unknown due to limited information
+- If this is a late-stage action (e.g., enacted), indicate immediate review and compliance actions
+- Be explicit about uncertainties (e.g., effective dates, implementation details)
 
 Respond with ONLY valid JSON (no markdown, no preamble):
 
 {
-  "summary": "2-3 sentence factual summary of what this legislative action means and what the bill appears to address based on its title",
+  "summary": "2-3 sentence factual summary of what this bill specifically does based on the full text provided, citing key provisions, and what this legislative action means for the bill's progress",
   
-  "why_it_matters": "1-2 paragraphs explaining potential operational implications if this bill advances. Be clear about uncertainty. Focus on what municipal officials should watch for.",
+  "why_it_matters": "1-2 paragraphs explaining concrete operational implications based on specific bill provisions. Reference actual sections or requirements from the bill text. Focus on what municipal officials need to prepare for.",
   
   "who_should_care": ["Array of 1-4 relevant municipal roles from: Town Administrator/Manager, Municipal Clerk, Election Administrator, Treasurer/Collector, Finance Director, Town Counsel, DPW Director, Chief Procurement Officer, School Business Manager, Board of Health Director, Police Chief, Planning Director"],
   
   "what_to_do": "One of: monitor (track legislative progress), prepare (bill is advancing, review full text), act (bill enacted, immediate compliance needed)",
   
-  "recommended_next_steps": ["Array of 1-3 specific actions. For early stage: monitoring steps. For late stage: review and implementation steps. Be realistic about what's appropriate at this stage."],
+  "recommended_next_steps": ["Array of 1-3 specific, actionable steps based on what the bill actually requires. For early stage: monitoring and preparation steps. For late stage: specific compliance and implementation actions."],
   
   "urgency": "One of: low (early stage or unlikely to affect operations), medium (advancing and may affect operations), high (enacted or imminent passage with significant impact)",
   
   "action_types": ["Array of 1-3 categories from: training, forms, procedure, budget, staffing, policy_update, legal_review, technology, communications"],
   
-  "confidence": "One of: low (title unclear or insufficient information), medium (can infer likely impact), high (clear action and implications)",
+  "confidence": "One of: low (bill text unclear or incomplete), medium (can infer likely impact from provisions), high (clear requirements and implications)",
   
-  "model_notes": "Note about limitations of this analysis given only the bill title and action text. Be explicit about what is unknown.",
+  "model_notes": "Note any limitations of this analysis - missing effective dates, unclear implementation details, need for legal review, etc.",
   
   "citations": [
     {
@@ -380,8 +419,16 @@ app.post('/api/collect', async (req, res) => {
       const { html, url } = await fetchBillPage(billNumber);
       results.logs.push(log('info', `Fetched: ${billNumber}`));
       
+      // Fetch bill text
+      const billText = await fetchBillText(billNumber, '194');
+      results.logs.push(log('info', `Fetched bill text: ${billNumber}`, { 
+        hasText: !!billText,
+        textLength: billText ? billText.length : 0
+      }));
+      
       // Parse bill data
       const billData = parseBillPage(html, url);
+      billData.billText = billText;
       results.logs.push(log('info', `Parsed: ${billNumber}`, { 
         actionCount: billData.historyRows.length 
       }));
