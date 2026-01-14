@@ -35,19 +35,6 @@ const storage = {
   seenItems: new Map(), // key: item_id, value: { sha256, last_seen }
 };
 
-// Trigger words that indicate significant bill actions worth analyzing
-const BILL_ACTION_TRIGGERS = [
-  'referred to',
-  'committee recommends',
-  'reported favorably',
-  'public hearing',
-  'passed to be engrossed',
-  'enacted',
-  'emergency preamble adopted',
-  'returned',
-  'governor signed',
-];
-
 // Logger
 function log(level, message, data = null) {
   const timestamp = new Date().toISOString();
@@ -55,18 +42,6 @@ function log(level, message, data = null) {
   if (data) logEntry.data = data;
   console.log(JSON.stringify(logEntry));
   return logEntry;
-}
-
-// Check if action text matches trigger words
-function shouldAnalyzeAction(actionText) {
-  const lowerAction = actionText.toLowerCase();
-  return BILL_ACTION_TRIGGERS.some(trigger => lowerAction.includes(trigger));
-}
-
-// Generate stable item ID
-function generateItemId(billNumber, actionDate, actionText) {
-  const normalized = `${billNumber}:${actionDate}:${actionText}`.toLowerCase().trim();
-  return crypto.createHash('sha256').update(normalized).digest('hex').substring(0, 16);
 }
 
 // Calculate SHA-256 hash
@@ -132,8 +107,8 @@ async function fetchBillText(billNumber, session) {
         pages: data.numpages 
       });
       
-      // Limit to 6000 chars to stay within token limits while getting substantial content
-      return text.substring(0, 6000);
+      // Limit to 30000 chars (~20-30 pages) to stay within token limits
+      return text.substring(0, 30000);
     }
     
     log('warn', `No text extracted from PDF for ${billNumber}`);
@@ -218,131 +193,72 @@ function parseBillPage(html, url) {
   };
 }
 
-// Process bill history and identify new items
-function processBillHistory(billData) {
-  const newItems = [];
+// Analyze bill with all its history
+async function analyzeBill(billData, billText) {
+  log('info', `Analyzing bill: ${billData.billNumber}`);
   
-  for (const historyRow of billData.historyRows) {
-    const itemId = generateItemId(billData.billNumber, historyRow.date, historyRow.action);
-    const contentHash = calculateHash(historyRow.action);
-    
-    // Check if we've seen this exact item before
-    const seenItem = storage.seenItems.get(itemId);
-    
-    if (seenItem && seenItem.sha256 === contentHash) {
-      // Already processed this exact action
-      continue;
-    }
-    
-    // Check if this action should be analyzed
-    if (!shouldAnalyzeAction(historyRow.action)) {
-      log('debug', `Skipping non-trigger action: ${itemId}`, { action: historyRow.action });
-      continue;
-    }
-    
-    // This is a new or updated action that should be analyzed
-    const item = {
-      item_id: itemId,
-      source: {
-        name: 'Massachusetts Legislature',
-        jurisdiction: 'MA',
-        source_weight: 'binding',
-      },
-      item_type: 'bill',
-      title: billData.title,
-      url: billData.url,
-      published_at: historyRow.date,
-      bill: {
-        bill_number: billData.billNumber,
-        session: '2025-2026',
-        current_status: billData.currentStatus,
-      },
-      raw_text: billData.billText || `Bill: ${billData.title}\nBill Number: ${billData.billNumber}\nDate: ${historyRow.date}\nBranch: ${historyRow.branch}\nAction: ${historyRow.action}\nCurrent Status: ${billData.currentStatus}`,
-      raw_text_sha256: contentHash,
-      action_text: historyRow.action,
-      action_date: historyRow.date,
-      action_branch: historyRow.branch,
-    };
-    
-    newItems.push(item);
-    
-    // Mark as seen
-    storage.seenItems.set(itemId, {
-      sha256: contentHash,
-      last_seen: new Date().toISOString(),
-    });
-    
-    log('info', `New item identified: ${itemId}`, { 
-      billNumber: billData.billNumber,
-      action: historyRow.action.substring(0, 50) + '...',
-    });
-  }
-  
-  return newItems;
-}
-
-// Analyze item with Anthropic API
-async function analyzeItem(item) {
-  log('info', `Analyzing item: ${item.item_id}`);
+  // Format history for the prompt
+  const historyText = billData.historyRows.map(row => 
+    `${row.date} - ${row.branch} - ${row.action}`
+  ).join('\n');
   
   const prompt = `You are a municipal policy analyst for Massachusetts local government. Your role is to interpret state legislation for municipal officials, focusing exclusively on operational implications.
 
 BILL INFORMATION:
-Title: ${item.title}
-Bill Number: ${item.bill.bill_number}
-Recent Action (${item.action_date}): ${item.action_text}
-Current Status: ${item.bill.current_status}
-Source: ${item.url}
+Title: ${billData.title}
+Bill Number: ${billData.billNumber}
+Current Status: ${billData.currentStatus}
+Source: ${billData.url}
 
 FULL BILL TEXT:
-${item.raw_text}
+${billText || billData.currentStatus}
 
-CONTEXT:
-This is a legislative action record. The action "${item.action_text}" has occurred on ${item.action_date}.
+COMPLETE BILL HISTORY:
+${historyText}
 
 ANALYSIS INSTRUCTIONS:
-Analyze this bill as a municipal operations analyst would. Read the full bill text carefully and focus on:
-1. What this bill specifically does (cite actual provisions)
-2. What this recent legislative action means for the bill's progress
+Analyze this bill comprehensively as a municipal operations analyst would. Read the full bill text and legislative history carefully and focus on:
+1. What this bill specifically does (cite actual provisions and sections)
+2. The bill's current stage in the legislative process based on its complete history
 3. Concrete operational implications for municipal government
 4. Which municipal roles need to know about this
-5. What preparatory actions are warranted at this stage
+5. What preparatory actions are warranted given the bill's current stage
 
 CRITICAL REQUIREMENTS:
 - Use neutral, professional language suitable for municipal administrators
 - Cite specific provisions and sections from the bill text when explaining what it does
 - Be concrete about operational impacts based on actual bill language
 - Avoid political framing or policy commentary
-- If this is an early-stage action (e.g., committee referral), indicate monitoring is appropriate
-- If this is a late-stage action (e.g., enacted), indicate immediate review and compliance actions
+- Assess urgency based on where the bill is in the legislative process (early stage = monitor, advancing = prepare, enacted = act)
 - Be explicit about uncertainties (e.g., effective dates, implementation details)
+- Reference the bill's legislative history to show progression
 
 Respond with ONLY valid JSON (no markdown, no preamble):
 
 {
-  "summary": "2-3 sentence factual summary of what this bill specifically does based on the full text provided, citing key provisions, and what this legislative action means for the bill's progress",
+  "summary": "2-3 sentence factual summary of what this bill specifically does based on the full text, citing key provisions, and where it currently stands in the legislative process based on its history",
   
-  "why_it_matters": "1-2 paragraphs explaining concrete operational implications based on specific bill provisions. Reference actual sections or requirements from the bill text. Focus on what municipal officials need to prepare for.",
+  "why_it_matters": "1-2 paragraphs explaining concrete operational implications based on specific bill provisions. Reference actual sections or requirements from the bill text. Focus on what municipal officials need to prepare for given the bill's current stage.",
   
   "who_should_care": ["Array of 1-4 relevant municipal roles from: Town Administrator/Manager, Municipal Clerk, Election Administrator, Treasurer/Collector, Finance Director, Town Counsel, DPW Director, Chief Procurement Officer, School Business Manager, Board of Health Director, Police Chief, Planning Director"],
   
-  "what_to_do": "One of: monitor (track legislative progress), prepare (bill is advancing, review full text), act (bill enacted, immediate compliance needed)",
+  "what_to_do": "One of: monitor (track legislative progress - early stage), prepare (bill is advancing through legislature - review full text and start planning), act (bill enacted or imminent - immediate compliance and implementation needed)",
   
-  "recommended_next_steps": ["Array of 1-3 specific, actionable steps based on what the bill actually requires. For early stage: monitoring and preparation steps. For late stage: specific compliance and implementation actions."],
+  "recommended_next_steps": ["Array of 1-3 specific, actionable steps based on what the bill actually requires and its current legislative stage. For early stage: monitoring steps. For advancing: preparation and review steps. For enacted: specific compliance and implementation actions."],
   
-  "urgency": "One of: low (early stage or unlikely to affect operations), medium (advancing and may affect operations), high (enacted or imminent passage with significant impact)",
+  "urgency": "One of: low (early stage or unlikely to affect operations), medium (advancing through legislature and likely to affect operations), high (enacted, passed final stage, or imminent passage with significant impact)",
   
   "action_types": ["Array of 1-3 categories from: training, forms, procedure, budget, staffing, policy_update, legal_review, technology, communications"],
   
   "confidence": "One of: low (bill text unclear or incomplete), medium (can infer likely impact from provisions), high (clear requirements and implications)",
   
-  "model_notes": "Note any limitations of this analysis - missing effective dates, unclear implementation details, need for legal review, etc.",
+  "model_notes": "Note any limitations of this analysis - missing effective dates, unclear implementation details, need for legal review, incomplete bill text, etc.",
   
   "citations": [
     {
-      "label": "Legislative action",
-      "supporting_text": "${item.action_text.substring(0, 50)}",
-      "location": "Bill history, ${item.action_date}"
+      "label": "Most recent legislative action",
+      "supporting_text": "${billData.historyRows[0]?.action.substring(0, 50) || 'N/A'}",
+      "location": "Bill history, ${billData.historyRows[0]?.date || 'N/A'}"
     }
   ]
 }`;
@@ -361,32 +277,40 @@ Respond with ONLY valid JSON (no markdown, no preamble):
     const cleanJson = responseText.replace(/```json\n?|\n?```/g, '').trim();
     const analysis = JSON.parse(cleanJson);
     
-    log('info', `Analysis complete: ${item.item_id}`);
+    log('info', `Analysis complete: ${billData.billNumber}`);
     
     return analysis;
     
   } catch (error) {
-    log('error', `Analysis failed: ${item.item_id}`, { error: error.message });
+    log('error', `Analysis failed: ${billData.billNumber}`, { error: error.message });
     throw error;
   }
 }
 
-// Create impact brief from item and analysis
-function createBrief(item, analysis) {
+// Create impact brief from bill data and analysis
+function createBrief(billData, billText, analysis) {
   const brief = {
     schema_version: 'v1',
     brief_id: crypto.randomUUID(),
     created_at: new Date().toISOString(),
     item: {
-      item_id: item.item_id,
-      source: item.source,
-      item_type: item.item_type,
-      title: item.title,
-      url: item.url,
-      published_at: item.published_at,
-      bill: item.bill,
-      raw_text: item.raw_text,
-      raw_text_sha256: item.raw_text_sha256,
+      source: {
+        name: 'Massachusetts Legislature',
+        jurisdiction: 'MA',
+        source_weight: 'binding',
+      },
+      item_type: 'bill',
+      title: billData.title,
+      url: billData.url,
+      published_at: billData.historyRows[0]?.date || new Date().toISOString(),
+      bill: {
+        bill_number: billData.billNumber,
+        session: '2025-2026',
+        current_status: billData.currentStatus,
+      },
+      raw_text: billText || billData.currentStatus,
+      raw_text_sha256: calculateHash(billText || billData.currentStatus),
+      history: billData.historyRows,
     },
     analysis: {
       summary: analysis.summary,
@@ -423,7 +347,6 @@ app.post('/api/collect', async (req, res) => {
   const results = {
     success: true,
     billsProcessed: 0,
-    itemsIdentified: 0,
     briefsCreated: 0,
     errors: [],
     briefs: [],
@@ -446,32 +369,16 @@ app.post('/api/collect', async (req, res) => {
       
       // Parse bill data
       const billData = parseBillPage(html, url);
-      billData.billText = billText;
       results.logs.push(log('info', `Parsed: ${billNumber}`, { 
         actionCount: billData.historyRows.length 
       }));
       
-      // Process history to find new items
-      const newItems = processBillHistory(billData);
-      results.itemsIdentified += newItems.length;
-      results.logs.push(log('info', `New items: ${newItems.length} for ${billNumber}`));
-      
-      // Analyze each new item
-      for (const item of newItems) {
-        try {
-          const analysis = await analyzeItem(item);
-          const brief = createBrief(item, analysis);
-          results.briefs.push(brief);
-          results.briefsCreated++;
-          results.logs.push(log('info', `Brief created for ${item.item_id}`));
-        } catch (error) {
-          const errorLog = log('error', `Failed to analyze item: ${item.item_id}`, { 
-            error: error.message 
-          });
-          results.errors.push(errorLog);
-          results.logs.push(errorLog);
-        }
-      }
+      // Analyze the entire bill with all its history
+      const analysis = await analyzeBill(billData, billText);
+      const brief = createBrief(billData, billText, analysis);
+      results.briefs.push(brief);
+      results.briefsCreated++;
+      results.logs.push(log('info', `Brief created for ${billNumber}`));
       
       results.billsProcessed++;
       
@@ -488,7 +395,6 @@ app.post('/api/collect', async (req, res) => {
   
   log('info', 'Collection completed', {
     billsProcessed: results.billsProcessed,
-    itemsIdentified: results.itemsIdentified,
     briefsCreated: results.briefsCreated,
     errorCount: results.errors.length,
   });
@@ -519,7 +425,6 @@ app.get('/health', (req, res) => {
     status: 'ok',
     timestamp: new Date().toISOString(),
     briefCount: storage.briefs.size,
-    seenItemCount: storage.seenItems.size,
   });
 });
 
