@@ -10,6 +10,9 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { readFileSync } from 'fs';
 import pdf from 'pdf-parse/lib/pdf-parse.js';
+import pg from 'pg';
+
+const { Pool } = pg;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -20,8 +23,15 @@ app.use(express.json());
 
 // Environment validation
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+const DATABASE_URL = process.env.DATABASE_URL;
+
 if (!ANTHROPIC_API_KEY) {
   console.error('ERROR: ANTHROPIC_API_KEY environment variable not set');
+  process.exit(1);
+}
+
+if (!DATABASE_URL) {
+  console.error('ERROR: DATABASE_URL environment variable not set');
   process.exit(1);
 }
 
@@ -29,11 +39,22 @@ const anthropic = new Anthropic({
   apiKey: ANTHROPIC_API_KEY,
 });
 
-// In-memory storage (replace with database in production)
-const storage = {
-  briefs: new Map(),
-  seenItems: new Map(), // key: item_id, value: { sha256, last_seen }
-};
+// PostgreSQL connection pool
+const pool = new Pool({
+  connectionString: DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false
+  }
+});
+
+// Test database connection
+pool.query('SELECT NOW()', (err, res) => {
+  if (err) {
+    console.error('Database connection error:', err);
+  } else {
+    console.log('Database connected successfully at:', res.rows[0].now);
+  }
+});
 
 // Logger
 function log(level, message, data = null) {
@@ -82,22 +103,16 @@ async function fetchBillText(billNumber, session) {
       return null;
     }
     
-    // Get PDF as buffer
     const arrayBuffer = await response.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
     
     log('info', `Downloaded PDF for ${billNumber}`, { size: buffer.length });
     
-    // Parse PDF
     const data = await pdf(buffer);
     
     if (data && data.text) {
       let text = data.text;
-      
-      // Clean up the text
       text = text.replace(/\s+/g, ' ').trim();
-      
-      // Remove common headers/footers
       text = text.replace(/The Commonwealth of Massachusetts/gi, '');
       text = text.replace(/HOUSE OF REPRESENTATIVES|SENATE/gi, '');
       text = text.replace(/Page \d+ of \d+/gi, '');
@@ -107,7 +122,6 @@ async function fetchBillText(billNumber, session) {
         pages: data.numpages 
       });
       
-      // Limit to 30000 chars (~20-30 pages) to stay within token limits
       return text.substring(0, 30000);
     }
     
@@ -125,14 +139,12 @@ function parseBillPage(html, url) {
   const dom = new JSDOM(html);
   const document = dom.window.document;
   
-  // Extract bill title from h2
   let title = 'Unknown Title';
   const h2 = document.querySelector('h2');
   if (h2 && h2.textContent.trim()) {
     title = h2.textContent.trim();
   }
   
-  // Extract bill number from h1
   let billNumber = null;
   const h1 = document.querySelector('h1');
   if (h1) {
@@ -149,14 +161,12 @@ function parseBillPage(html, url) {
   
   log('info', `Extracted bill number: ${billNumber}`);
   
-  // Extract current status from pinslip (petition description)
   let currentStatus = 'Status unknown';
   const pinslip = document.querySelector('.pinslip');
   if (pinslip && pinslip.textContent.trim()) {
     currentStatus = pinslip.textContent.trim();
   }
   
-  // Extract bill history from table
   const historyRows = [];
   const table = document.querySelector('table.table-dark');
   
@@ -193,11 +203,56 @@ function parseBillPage(html, url) {
   };
 }
 
+// Store or update bill in database
+async function storeBill(billData) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    
+    // Insert or update bill
+    const billResult = await client.query(
+      `INSERT INTO bills (bill_number, session, title, url, current_status, last_checked, last_updated)
+       VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+       ON CONFLICT (bill_number) 
+       DO UPDATE SET 
+         title = EXCLUDED.title,
+         url = EXCLUDED.url,
+         current_status = EXCLUDED.current_status,
+         last_checked = NOW(),
+         last_updated = NOW()
+       RETURNING id`,
+      [billData.billNumber, '2025-2026', billData.title, billData.url, billData.currentStatus]
+    );
+    
+    const billId = billResult.rows[0].id;
+    
+    // Store history
+    for (const row of billData.historyRows) {
+      await client.query(
+        `INSERT INTO bill_history (bill_id, action_date, branch, action_text)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (bill_id, action_date, action_text) DO NOTHING`,
+        [billId, row.date, row.branch, row.action]
+      );
+    }
+    
+    await client.query('COMMIT');
+    log('info', `Stored bill in database: ${billData.billNumber}`);
+    return billId;
+    
+  } catch (error) {
+    await client.query('ROLLBACK');
+    log('error', `Failed to store bill: ${billData.billNumber}`, { error: error.message });
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 // Analyze bill with all its history
 async function analyzeBill(billData, billText) {
   log('info', `Analyzing bill: ${billData.billNumber}`);
   
-  // Format history for the prompt
   const historyText = billData.historyRows.map(row => 
     `${row.date} - ${row.branch} - ${row.action}`
   ).join('\n');
@@ -287,12 +342,48 @@ Respond with ONLY valid JSON (no markdown, no preamble):
   }
 }
 
-// Create impact brief from bill data and analysis
-function createBrief(billData, billText, analysis) {
-  const brief = {
+// Store brief in database
+async function storeBrief(billId, billText, analysis) {
+  try {
+    const briefId = crypto.randomUUID();
+    
+    await pool.query(
+      `INSERT INTO briefs (
+        brief_id, bill_id, summary, why_it_matters, who_should_care,
+        what_to_do, recommended_next_steps, urgency, action_types,
+        confidence, model_notes, bill_text
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+      [
+        briefId,
+        billId,
+        analysis.summary,
+        analysis.why_it_matters,
+        JSON.stringify(analysis.who_should_care),
+        analysis.what_to_do,
+        JSON.stringify(analysis.recommended_next_steps),
+        analysis.urgency,
+        JSON.stringify(analysis.action_types),
+        analysis.confidence,
+        analysis.model_notes,
+        billText
+      ]
+    );
+    
+    log('info', `Brief stored in database: ${briefId}`);
+    return briefId;
+    
+  } catch (error) {
+    log('error', `Failed to store brief`, { error: error.message });
+    throw error;
+  }
+}
+
+// Create brief response object
+function createBriefResponse(bill, history, brief) {
+  return {
     schema_version: 'v1',
-    brief_id: crypto.randomUUID(),
-    created_at: new Date().toISOString(),
+    brief_id: brief.brief_id,
+    created_at: brief.created_at,
     item: {
       source: {
         name: 'Massachusetts Legislature',
@@ -300,36 +391,35 @@ function createBrief(billData, billText, analysis) {
         source_weight: 'binding',
       },
       item_type: 'bill',
-      title: billData.title,
-      url: billData.url,
-      published_at: billData.historyRows[0]?.date || new Date().toISOString(),
+      title: bill.title,
+      url: bill.url,
+      published_at: history[0]?.action_date || new Date().toISOString(),
       bill: {
-        bill_number: billData.billNumber,
-        session: '2025-2026',
-        current_status: billData.currentStatus,
+        bill_number: bill.bill_number,
+        session: bill.session,
+        current_status: bill.current_status,
       },
-      raw_text: billText || billData.currentStatus,
-      raw_text_sha256: calculateHash(billText || billData.currentStatus),
-      history: billData.historyRows,
+      raw_text: brief.bill_text,
+      raw_text_sha256: calculateHash(brief.bill_text || ''),
+      history: history.map(h => ({
+        date: h.action_date,
+        branch: h.branch,
+        action: h.action_text
+      })),
     },
     analysis: {
-      summary: analysis.summary,
-      why_it_matters: analysis.why_it_matters,
-      who_should_care: analysis.who_should_care,
-      what_to_do: analysis.what_to_do,
-      recommended_next_steps: analysis.recommended_next_steps || [],
-      urgency: analysis.urgency,
-      action_types: analysis.action_types,
-      confidence: analysis.confidence,
-      model_notes: analysis.model_notes || '',
-      citations: analysis.citations || [],
+      summary: brief.summary,
+      why_it_matters: brief.why_it_matters,
+      who_should_care: brief.who_should_care,
+      what_to_do: brief.what_to_do,
+      recommended_next_steps: brief.recommended_next_steps,
+      urgency: brief.urgency,
+      action_types: brief.action_types,
+      confidence: brief.confidence,
+      model_notes: brief.model_notes,
+      citations: [],
     },
   };
-  
-  storage.briefs.set(brief.brief_id, brief);
-  log('info', `Brief created: ${brief.brief_id}`);
-  
-  return brief;
 }
 
 // Main collection endpoint
@@ -353,29 +443,44 @@ app.post('/api/collect', async (req, res) => {
     logs: [],
   };
   
-  // Process each bill
   for (const billNumber of billNumbers) {
     try {
-      // Fetch bill page
       const { html, url } = await fetchBillPage(billNumber);
       results.logs.push(log('info', `Fetched: ${billNumber}`));
       
-      // Fetch bill text from PDF
       const billText = await fetchBillText(billNumber, '194');
       results.logs.push(log('info', `Fetched bill text: ${billNumber}`, { 
         hasText: !!billText,
         textLength: billText ? billText.length : 0
       }));
       
-      // Parse bill data
       const billData = parseBillPage(html, url);
       results.logs.push(log('info', `Parsed: ${billNumber}`, { 
         actionCount: billData.historyRows.length 
       }));
       
-      // Analyze the entire bill with all its history
+      const billId = await storeBill(billData);
+      
       const analysis = await analyzeBill(billData, billText);
-      const brief = createBrief(billData, billText, analysis);
+      await storeBrief(billId, billText, analysis);
+      
+      // Fetch stored data to return
+      const billResult = await pool.query('SELECT * FROM bills WHERE id = $1', [billId]);
+      const historyResult = await pool.query(
+        'SELECT * FROM bill_history WHERE bill_id = $1 ORDER BY action_date DESC',
+        [billId]
+      );
+      const briefResult = await pool.query(
+        'SELECT * FROM briefs WHERE bill_id = $1 ORDER BY created_at DESC LIMIT 1',
+        [billId]
+      );
+      
+      const brief = createBriefResponse(
+        billResult.rows[0],
+        historyResult.rows,
+        briefResult.rows[0]
+      );
+      
       results.briefs.push(brief);
       results.briefsCreated++;
       results.logs.push(log('info', `Brief created for ${billNumber}`));
@@ -403,29 +508,101 @@ app.post('/api/collect', async (req, res) => {
 });
 
 // Get all briefs
-app.get('/api/briefs', (req, res) => {
-  const briefs = Array.from(storage.briefs.values()).sort((a, b) => 
-    new Date(b.created_at) - new Date(a.created_at)
-  );
-  res.json({ briefs });
+app.get('/api/briefs', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT b.*, bills.bill_number, bills.title, bills.url, bills.current_status, bills.session
+      FROM briefs b
+      JOIN bills ON b.bill_id = bills.id
+      ORDER BY b.created_at DESC
+    `);
+    
+    const briefs = await Promise.all(result.rows.map(async (brief) => {
+      const historyResult = await pool.query(
+        'SELECT * FROM bill_history WHERE bill_id = $1 ORDER BY action_date DESC',
+        [brief.bill_id]
+      );
+      
+      return createBriefResponse(
+        {
+          bill_number: brief.bill_number,
+          title: brief.title,
+          url: brief.url,
+          current_status: brief.current_status,
+          session: brief.session
+        },
+        historyResult.rows,
+        brief
+      );
+    }));
+    
+    res.json({ briefs });
+  } catch (error) {
+    log('error', 'Failed to fetch briefs', { error: error.message });
+    res.status(500).json({ error: 'Failed to fetch briefs' });
+  }
 });
 
 // Get single brief
-app.get('/api/briefs/:id', (req, res) => {
-  const brief = storage.briefs.get(req.params.id);
-  if (!brief) {
-    return res.status(404).json({ error: 'Brief not found' });
+app.get('/api/briefs/:id', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT b.*, bills.bill_number, bills.title, bills.url, bills.current_status, bills.session
+       FROM briefs b
+       JOIN bills ON b.bill_id = bills.id
+       WHERE b.brief_id = $1`,
+      [req.params.id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Brief not found' });
+    }
+    
+    const brief = result.rows[0];
+    const historyResult = await pool.query(
+      'SELECT * FROM bill_history WHERE bill_id = $1 ORDER BY action_date DESC',
+      [brief.bill_id]
+    );
+    
+    const briefResponse = createBriefResponse(
+      {
+        bill_number: brief.bill_number,
+        title: brief.title,
+        url: brief.url,
+        current_status: brief.current_status,
+        session: brief.session
+      },
+      historyResult.rows,
+      brief
+    );
+    
+    res.json(briefResponse);
+  } catch (error) {
+    log('error', 'Failed to fetch brief', { error: error.message });
+    res.status(500).json({ error: 'Failed to fetch brief' });
   }
-  res.json(brief);
 });
 
 // Health check
-app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'ok',
-    timestamp: new Date().toISOString(),
-    briefCount: storage.briefs.size,
-  });
+app.get('/health', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT COUNT(*) FROM bills');
+    const billCount = parseInt(result.rows[0].count);
+    
+    res.json({ 
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+      billCount: billCount,
+      database: 'connected'
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: 'error',
+      timestamp: new Date().toISOString(),
+      database: 'disconnected',
+      error: error.message
+    });
+  }
 });
 
 // Serve HTML file at root
