@@ -291,12 +291,12 @@
                 <input 
                     type="text" 
                     id="billInput" 
-                    placeholder="Enter bill numbers separated by commas (e.g., H3121, S2024)"
+                    placeholder="Enter bill numbers separated by commas (e.g., H491, S2024, H4916)"
                     onkeypress="if(event.key === 'Enter') analyzeBills()"
                 />
                 <button onclick="analyzeBills()" id="analyzeBtn">Analyze Bills</button>
             </div>
-            <p style="color: #718096; font-size: 14px;">Examples: H3121, S2024, H4771</p>
+            <p style="color: #718096; font-size: 14px;">Examples: H491, S2024, H4916</p>
         </div>
 
         <div id="results"></div>
@@ -336,9 +336,8 @@
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                             </svg>
-                            <h3>No New Updates Found</h3>
-                            <p>These bills have no new significant actions since last check.</p>
-                            <p style="margin-top: 10px; font-size: 14px;">Bills processed: ${data.billsProcessed} | Actions reviewed: ${data.itemsIdentified}</p>
+                            <h3>No briefs generated</h3>
+                            <p>Unable to analyze the requested bills.</p>
                         </div>
                     `;
                 }
@@ -396,10 +395,17 @@
                                                 <th>Action</th>
                                             </tr>
                                         </thead>
-                                        <tbody id="history-${brief.brief_id}">
-                                            <tr>
-                                                <td colspan="3" style="padding: 10px; text-align: center; color: #718096;">Loading history...</td>
-                                            </tr>
+                                        <tbody>
+                                            ${brief.item.history && brief.item.history.length > 0 
+                                                ? brief.item.history.map(h => `
+                                                    <tr>
+                                                        <td>${h.date}</td>
+                                                        <td>${h.branch}</td>
+                                                        <td>${h.action}</td>
+                                                    </tr>
+                                                `).join('')
+                                                : '<tr><td colspan="3" style="padding: 10px; text-align: center; color: #718096;">No history available</td></tr>'
+                                            }
                                         </tbody>
                                     </table>
                                 </div>
@@ -442,52 +448,6 @@
             `;
 
             resultsDiv.innerHTML = html;
-            
-            // Fetch bill history for each brief
-            briefs.forEach(async (brief) => {
-                try {
-                    const billNum = brief.item.bill.bill_number.replace('.', '');
-                    const response = await fetch(brief.item.url);
-                    const html = await response.text();
-                    
-                    const parser = new DOMParser();
-                    const doc = parser.parseFromString(html, 'text/html');
-                    const historyTable = doc.querySelector('table.table-dark tbody');
-                    
-                    if (historyTable) {
-                        const rows = historyTable.querySelectorAll('tr');
-                        let historyHtml = '';
-                        
-                        rows.forEach(row => {
-                            const cells = row.querySelectorAll('td');
-                            if (cells.length >= 3) {
-                                const date = cells[0].textContent.trim();
-                                const branch = cells[1].textContent.trim();
-                                const action = cells[2].textContent.trim();
-                                
-                                historyHtml += `
-                                    <tr>
-                                        <td>${date}</td>
-                                        <td>${branch}</td>
-                                        <td>${action}</td>
-                                    </tr>
-                                `;
-                            }
-                        });
-                        
-                        const historyBody = document.getElementById(`history-${brief.brief_id}`);
-                        if (historyBody) {
-                            historyBody.innerHTML = historyHtml || '<tr><td colspan="3" style="padding: 10px; text-align: center; color: #718096;">No history available</td></tr>';
-                        }
-                    }
-                } catch (error) {
-                    console.error('Failed to fetch bill history:', error);
-                    const historyBody = document.getElementById(`history-${brief.brief_id}`);
-                    if (historyBody) {
-                        historyBody.innerHTML = '<tr><td colspan="3" style="padding: 10px; text-align: center; color: #e53e3e;">Failed to load history</td></tr>';
-                    }
-                }
-            });
         }
     </script>
 </body>
