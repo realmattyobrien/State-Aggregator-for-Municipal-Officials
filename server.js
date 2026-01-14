@@ -95,14 +95,14 @@ async function fetchBillPage(billNumber) {
 
 // Fetch bill text
 async function fetchBillText(billNumber, session) {
-  const textUrl = `https://malegislature.gov/Bills/${session}/${billNumber}/BillText`;
+  const textUrl = `https://malegislature.gov/Bills/${session}/${billNumber}`;
   
   log('info', `Fetching bill text: ${billNumber}`, { textUrl });
   
   try {
     const response = await fetch(textUrl);
     if (!response.ok) {
-      log('warn', `Could not fetch bill text for ${billNumber}`);
+      log('warn', `Could not fetch bill page for ${billNumber}`);
       return null;
     }
     const html = await response.text();
@@ -110,17 +110,53 @@ async function fetchBillText(billNumber, session) {
     const dom = new JSDOM(html);
     const document = dom.window.document;
     
-    // Extract text from bill content
-    const billContent = document.querySelector('.modal-body');
-    if (billContent) {
-      // Get text, clean up whitespace
-      let text = billContent.textContent;
-      text = text.replace(/\s+/g, ' ').trim();
-      // Limit to first 4000 characters to avoid token limits
-      return text.substring(0, 4000);
+    // Try to get bill text from pinslip (the petition description)
+    const pinslip = document.querySelector('.pinslip');
+    if (pinslip && pinslip.textContent.trim()) {
+      let text = pinslip.textContent.trim();
+      
+      // If it's substantial, use it
+      if (text.length > 100) {
+        log('info', `Using pinslip text for ${billNumber}`, { length: text.length });
+        return text;
+      }
     }
     
+    // Try to find the actual bill document link
+    const billTextLink = document.querySelector('a[href*="/Bill/Text"]');
+    if (billTextLink) {
+      const billTextHref = billTextLink.getAttribute('href');
+      const fullUrl = `https://malegislature.gov${billTextHref}`;
+      
+      log('info', `Found bill text link: ${fullUrl}`);
+      
+      const textResponse = await fetch(fullUrl);
+      if (textResponse.ok) {
+        const textHtml = await textResponse.text();
+        const textDom = new JSDOM(textHtml);
+        const textDoc = textDom.window.document;
+        
+        // Get all text content from the modal body
+        const modalBody = textDoc.querySelector('.modal-body');
+        if (modalBody) {
+          let billText = modalBody.textContent;
+          billText = billText.replace(/\s+/g, ' ').trim();
+          // Remove common navigation/UI text
+          billText = billText.replace(/Close\s+Print\s+Preview/gi, '');
+          billText = billText.replace(/The\s+Commonwealth\s+of\s+Massachusetts/gi, '');
+          
+          if (billText.length > 200) {
+            log('info', `Extracted bill text from document`, { length: billText.length });
+            // Limit to 5000 chars to stay within token limits
+            return billText.substring(0, 5000);
+          }
+        }
+      }
+    }
+    
+    log('warn', `Could not extract meaningful bill text for ${billNumber}`);
     return null;
+    
   } catch (error) {
     log('error', `Failed to fetch bill text: ${billNumber}`, { error: error.message });
     return null;
