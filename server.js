@@ -9,6 +9,7 @@ import { JSDOM } from 'jsdom';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { readFileSync } from 'fs';
+import pdf from 'pdf-parse/lib/pdf-parse.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -93,72 +94,53 @@ async function fetchBillPage(billNumber) {
   }
 }
 
-// Fetch bill text
+// Fetch bill text from PDF
 async function fetchBillText(billNumber, session) {
-  const textUrl = `https://malegislature.gov/Bills/${session}/${billNumber}`;
+  const pdfUrl = `https://malegislature.gov/Bills/${session}/${billNumber}.pdf`;
   
-  log('info', `Fetching bill text: ${billNumber}`, { textUrl });
+  log('info', `Fetching bill PDF: ${billNumber}`, { pdfUrl });
   
   try {
-    const response = await fetch(textUrl);
+    const response = await fetch(pdfUrl);
     if (!response.ok) {
-      log('warn', `Could not fetch bill page for ${billNumber}`);
+      log('warn', `Could not fetch bill PDF for ${billNumber}`, { status: response.status });
       return null;
     }
-    const html = await response.text();
     
-    const dom = new JSDOM(html);
-    const document = dom.window.document;
+    // Get PDF as buffer
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
     
-    // Try to get bill text from pinslip (the petition description)
-    const pinslip = document.querySelector('.pinslip');
-    if (pinslip && pinslip.textContent.trim()) {
-      let text = pinslip.textContent.trim();
+    log('info', `Downloaded PDF for ${billNumber}`, { size: buffer.length });
+    
+    // Parse PDF
+    const data = await pdf(buffer);
+    
+    if (data && data.text) {
+      let text = data.text;
       
-      // If it's substantial, use it
-      if (text.length > 100) {
-        log('info', `Using pinslip text for ${billNumber}`, { length: text.length });
-        return text;
-      }
+      // Clean up the text
+      text = text.replace(/\s+/g, ' ').trim();
+      
+      // Remove common headers/footers
+      text = text.replace(/The Commonwealth of Massachusetts/gi, '');
+      text = text.replace(/HOUSE OF REPRESENTATIVES|SENATE/gi, '');
+      text = text.replace(/Page \d+ of \d+/gi, '');
+      
+      log('info', `Extracted text from PDF for ${billNumber}`, { 
+        textLength: text.length,
+        pages: data.numpages 
+      });
+      
+      // Limit to 6000 chars to stay within token limits while getting substantial content
+      return text.substring(0, 6000);
     }
     
-    // Try to find the actual bill document link
-    const billTextLink = document.querySelector('a[href*="/Bill/Text"]');
-    if (billTextLink) {
-      const billTextHref = billTextLink.getAttribute('href');
-      const fullUrl = `https://malegislature.gov${billTextHref}`;
-      
-      log('info', `Found bill text link: ${fullUrl}`);
-      
-      const textResponse = await fetch(fullUrl);
-      if (textResponse.ok) {
-        const textHtml = await textResponse.text();
-        const textDom = new JSDOM(textHtml);
-        const textDoc = textDom.window.document;
-        
-        // Get all text content from the modal body
-        const modalBody = textDoc.querySelector('.modal-body');
-        if (modalBody) {
-          let billText = modalBody.textContent;
-          billText = billText.replace(/\s+/g, ' ').trim();
-          // Remove common navigation/UI text
-          billText = billText.replace(/Close\s+Print\s+Preview/gi, '');
-          billText = billText.replace(/The\s+Commonwealth\s+of\s+Massachusetts/gi, '');
-          
-          if (billText.length > 200) {
-            log('info', `Extracted bill text from document`, { length: billText.length });
-            // Limit to 5000 chars to stay within token limits
-            return billText.substring(0, 5000);
-          }
-        }
-      }
-    }
-    
-    log('warn', `Could not extract meaningful bill text for ${billNumber}`);
+    log('warn', `No text extracted from PDF for ${billNumber}`);
     return null;
     
   } catch (error) {
-    log('error', `Failed to fetch bill text: ${billNumber}`, { error: error.message });
+    log('error', `Failed to fetch/parse bill PDF: ${billNumber}`, { error: error.message });
     return null;
   }
 }
@@ -455,7 +437,7 @@ app.post('/api/collect', async (req, res) => {
       const { html, url } = await fetchBillPage(billNumber);
       results.logs.push(log('info', `Fetched: ${billNumber}`));
       
-      // Fetch bill text
+      // Fetch bill text from PDF
       const billText = await fetchBillText(billNumber, '194');
       results.logs.push(log('info', `Fetched bill text: ${billNumber}`, { 
         hasText: !!billText,
