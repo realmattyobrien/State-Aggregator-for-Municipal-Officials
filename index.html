@@ -246,6 +246,36 @@
             margin-bottom: 16px;
             opacity: 0.5;
         }
+
+        .bill-history-table {
+            margin-top: 10px;
+            overflow-x: auto;
+        }
+
+        .bill-history-table table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .bill-history-table thead tr {
+            background: #f7fafc;
+            border-bottom: 2px solid #e2e8f0;
+        }
+
+        .bill-history-table th {
+            padding: 10px;
+            text-align: left;
+            font-size: 13px;
+            font-weight: 600;
+            color: #4a5568;
+        }
+
+        .bill-history-table td {
+            padding: 10px;
+            font-size: 13px;
+            color: #2d3748;
+            border-bottom: 1px solid #e2e8f0;
+        }
     </style>
 </head>
 <body>
@@ -335,6 +365,9 @@
                             <div class="brief-header">
                                 <div class="bill-number">${brief.item.bill.bill_number}</div>
                                 <h2 class="bill-title">${brief.item.title}</h2>
+                                <div class="bill-description" style="color: #4a5568; font-size: 15px; margin: 12px 0; line-height: 1.5;">
+                                    ${brief.item.bill.current_status}
+                                </div>
                                 <div class="bill-date">
                                     ${brief.item.published_at}
                                     <span class="urgency-badge urgency-${brief.analysis.urgency}">
@@ -344,33 +377,33 @@
                             </div>
 
                             <div class="action-badge action-${brief.analysis.what_to_do}">
-    ${brief.analysis.what_to_do}
-</div>
+                                ${brief.analysis.what_to_do}
+                            </div>
 
-<div class="section">
-    <div class="section-title">Summary</div>
-    <div class="section-content">${brief.analysis.summary}</div>
-</div>
+                            <div class="section">
+                                <div class="section-title">Summary</div>
+                                <div class="section-content">${brief.analysis.summary}</div>
+                            </div>
 
-<div class="section">
-    <div class="section-title">Bill History</div>
-    <div class="bill-history-table">
-        <table style="width: 100%; border-collapse: collapse;">
-            <thead>
-                <tr style="background: #f7fafc; border-bottom: 2px solid #e2e8f0;">
-                    <th style="padding: 10px; text-align: left; font-size: 13px; font-weight: 600; color: #4a5568;">Date</th>
-                    <th style="padding: 10px; text-align: left; font-size: 13px; font-weight: 600; color: #4a5568;">Branch</th>
-                    <th style="padding: 10px; text-align: left; font-size: 13px; font-weight: 600; color: #4a5568;">Action</th>
-                </tr>
-            </thead>
-            <tbody id="history-${brief.brief_id}">
-                <tr>
-                    <td colspan="3" style="padding: 10px; text-align: center; color: #718096;">Loading history...</td>
-                </tr>
-            </tbody>
-        </table>
-    </div>
-</div>
+                            <div class="section">
+                                <div class="section-title">Bill History</div>
+                                <div class="bill-history-table">
+                                    <table>
+                                        <thead>
+                                            <tr>
+                                                <th>Date</th>
+                                                <th>Branch</th>
+                                                <th>Action</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="history-${brief.brief_id}">
+                                            <tr>
+                                                <td colspan="3" style="padding: 10px; text-align: center; color: #718096;">Loading history...</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
 
                             <div class="section">
                                 <div class="section-title">Why It Matters</div>
@@ -409,8 +442,6 @@
             `;
 
             resultsDiv.innerHTML = html;
-
-            resultsDiv.innerHTML = html;
             
             // Fetch bill history for each brief
             briefs.forEach(async (brief) => {
@@ -435,10 +466,10 @@
                                 const action = cells[2].textContent.trim();
                                 
                                 historyHtml += `
-                                    <tr style="border-bottom: 1px solid #e2e8f0;">
-                                        <td style="padding: 10px; font-size: 13px; color: #2d3748;">${date}</td>
-                                        <td style="padding: 10px; font-size: 13px; color: #2d3748;">${branch}</td>
-                                        <td style="padding: 10px; font-size: 13px; color: #2d3748;">${action}</td>
+                                    <tr>
+                                        <td>${date}</td>
+                                        <td>${branch}</td>
+                                        <td>${action}</td>
                                     </tr>
                                 `;
                             }
@@ -451,9 +482,12 @@
                     }
                 } catch (error) {
                     console.error('Failed to fetch bill history:', error);
+                    const historyBody = document.getElementById(`history-${brief.brief_id}`);
+                    if (historyBody) {
+                        historyBody.innerHTML = '<tr><td colspan="3" style="padding: 10px; text-align: center; color: #e53e3e;">Failed to load history</td></tr>';
+                    }
                 }
             });
-        }
         }
     </script>
 </body>
