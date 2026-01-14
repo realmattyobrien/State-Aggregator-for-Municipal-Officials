@@ -92,40 +92,58 @@ function parseBillPage(html, url) {
   const dom = new JSDOM(html);
   const document = dom.window.document;
   
-  // Extract bill title
-  const titleElement = document.querySelector('.fc_billhead h1');
-  const title = titleElement ? titleElement.textContent.trim() : 'Unknown Title';
+  // Extract bill title from h2
+  let title = 'Unknown Title';
+  const h2 = document.querySelector('h2');
+  if (h2 && h2.textContent.trim()) {
+    title = h2.textContent.trim();
+  }
   
-  // Extract bill number
-  const billNumberMatch = title.match(/^(H\.|S\.)\d+/);
-  const billNumber = billNumberMatch ? billNumberMatch[0] : null;
+  // Extract bill number from h1
+  let billNumber = null;
+  const h1 = document.querySelector('h1');
+  if (h1) {
+    const match = h1.textContent.match(/Bill\s+(H|S)\.(\d+)/);
+    if (match) {
+      billNumber = match[1] + '.' + match[2];
+    }
+  }
   
   if (!billNumber) {
+    log('error', 'Could not extract bill number', { url, title });
     throw new Error('Could not extract bill number from page');
   }
   
-  // Extract current status
-  const statusElement = document.querySelector('.fc_billstatus');
-  const currentStatus = statusElement ? statusElement.textContent.trim() : 'Status unknown';
+  log('info', `Extracted bill number: ${billNumber}`);
   
-  // Extract bill history table
+  // Extract current status from pinslip (petition description)
+  let currentStatus = 'Status unknown';
+  const pinslip = document.querySelector('.pinslip');
+  if (pinslip && pinslip.textContent.trim()) {
+    currentStatus = pinslip.textContent.trim();
+  }
+  
+  // Extract bill history from table
   const historyRows = [];
-  const historyTable = document.querySelector('table.fc_billhistory');
+  const table = document.querySelector('table.table-dark');
   
-  if (historyTable) {
-    const rows = historyTable.querySelectorAll('tbody tr');
-    rows.forEach(row => {
-      const cells = row.querySelectorAll('td');
-      if (cells.length >= 3) {
-        const date = cells[0].textContent.trim();
-        const branch = cells[1].textContent.trim();
-        const action = cells[2].textContent.trim();
-        
-        if (date && action) {
-          historyRows.push({ date, branch, action });
+  if (table) {
+    const tbody = table.querySelector('tbody');
+    if (tbody) {
+      const rows = tbody.querySelectorAll('tr');
+      rows.forEach(row => {
+        const cells = row.querySelectorAll('td');
+        if (cells.length >= 3) {
+          const date = cells[0].textContent.trim();
+          const branch = cells[1].textContent.trim();
+          const action = cells[2].textContent.trim();
+          
+          if (date && action) {
+            historyRows.push({ date, branch, action });
+          }
         }
-      }
-    });
+      });
+    }
   }
   
   log('info', `Parsed bill page: ${billNumber}`, { 
